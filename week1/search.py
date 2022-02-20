@@ -2,12 +2,16 @@
 # The main search hooks for the Search Flask application.
 #
 from flask import (
-    Blueprint, redirect, render_template, request, url_for
+    Blueprint, redirect, render_template, request, url_for, g
 )
+
+import json
 
 from week1.opensearch import get_opensearch
 
 bp = Blueprint('search', __name__, url_prefix='/search')
+
+index = "bbuy_products"
 
 
 # Process the filters requested by the user and return a tuple that is appropriate for use in: the query, URLs displaying the filter and the display of the applied filters
@@ -29,7 +33,16 @@ def process_filters(filters_input):
         #TODO: IMPLEMENT AND SET filters, display_filters and applied_filters.
         # filters get used in create_query below.  display_filters gets used by display_filters.jinja2 and applied_filters gets used by aggregations.jinja2 (and any other links that would execute a search.)
         if type == "range":
-            pass
+            filter_from = request.args.get(filter + ".from")
+            filter_to = request.args.get(filter + ".to")
+            filters.append(
+                {
+                    "range": {
+                        filter: {"gte": filter_from, "lt": filter_to}
+                    }
+                }
+            )
+            display_filters.append(f"{display_name} from {filter_from} to {filter_to}")
         elif type == "terms":
             pass #TODO: IMPLEMENT
     print("Filters: {}".format(filters))
@@ -74,10 +87,10 @@ def query():
         query_obj = create_query("*", [], sort, sortDir)
 
     print("query obj: {}".format(query_obj))
-    response = None   # TODO: Replace me with an appropriate call to OpenSearch
+    response = g.opensearch.search(body=query_obj, index=index)
     # Postprocess results here if you so desire
 
-    #print(response)
+    print(json.dumps(response["aggregations"], indent=2))
     if error is None:
         return render_template("search_results.jinja2", query=user_query, search_response=response,
                                display_filters=display_filters, applied_filters=applied_filters,
@@ -91,10 +104,34 @@ def create_query(user_query, filters, sort="_score", sortDir="desc"):
     query_obj = {
         'size': 10,
         "query": {
-            "match_all": {} # Replace me with a query that both searches and filters
+            "bool": {
+                "must": {
+                    "multi_match": {
+                        "query": user_query,
+                        "fields": ["name^100", "shortDescription^50", "longDescription^10", "department"]
+                    }
+                },
+                "filter": filters
+            }
         },
         "aggs": {
-            #TODO: FILL ME IN
+            "regularPrice": {
+                "range": {
+                    "field": "regularPrice",
+                    "keyed": True, 
+                    "ranges": [
+                        {"key": "$", "from": 0, "to": 10},
+                        {"key": "$$", "from": 10, "to": 100},
+                        {"key": "$$$", "from": 100, "to": 1000},
+                        {"key": "$$$$", "from": 1000, "to": 10000},
+                        {"key": "$$$$$", "from": 10000, "to": 100000}
+                    ]
+                }
+            },
+            "missing_images": {
+                "missing": {"field": "image"}
+            }
         }
     }
     return query_obj
+
